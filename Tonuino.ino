@@ -4,6 +4,7 @@
 #include <MFRC522.h>
 #include <SPI.h>
 #include <SoftwareSerial.h>
+#include <avr/sleep.h>
 
 /*
    _____         _____ _____ _____ _____
@@ -17,7 +18,7 @@
 */
 
 // uncomment the below line to enable five button support
-#define FIVEBUTTONS
+//#define FIVEBUTTONS
 
 static const uint32_t cardCookie = 322417479;
 
@@ -61,7 +62,21 @@ struct adminSettings {
   folderSettings shortCuts[4];
   uint8_t adminMenuLocked;
   uint8_t adminMenuPin[4];
+  bool stopWhenCardAway;
 };
+
+
+//StopWhenCardAway settings
+static bool hasCard = false;
+static byte lastCardUid[4];
+static byte retries;
+static bool lastCardWasUL;
+static bool forgetLastCard=false;
+
+const byte PCS_NO_CHANGE     = 0; // no change detected since last pollCard() call
+const byte PCS_NEW_CARD      = 1; // card with new UID detected (had no card or other card before)
+const byte PCS_CARD_GONE     = 2; // card is not reachable anymore
+const byte PCS_CARD_IS_BACK  = 3; // card was gone, and is now back again
 
 adminSettings mySettings;
 nfcTagObject myCard;
@@ -152,7 +167,7 @@ void resetSettings() {
   mySettings.eq = 1;
   mySettings.locked = false;
   mySettings.standbyTimer = 0;
-  mySettings.invertVolumeButtons = false;
+  mySettings.invertVolumeButtons = true;
   mySettings.shortCuts[0].folder = 0;
   mySettings.shortCuts[1].folder = 0;
   mySettings.shortCuts[2].folder = 0;
@@ -162,7 +177,7 @@ void resetSettings() {
   mySettings.adminMenuPin[1] = 1;
   mySettings.adminMenuPin[2] = 1;
   mySettings.adminMenuPin[3] = 1;
-
+  mySettings.stopWhenCardAway = true;
   writeSettingsToFlash();
 }
 
@@ -220,6 +235,9 @@ void loadSettingsFromFlash() {
   Serial.print(mySettings.adminMenuPin[1]);
   Serial.print(mySettings.adminMenuPin[2]);
   Serial.println(mySettings.adminMenuPin[3]);
+
+  Serial.print(F("Stop when card away: "));
+  Serial.println(mySettings.stopWhenCardAway);
 }
 
 class Modifier {
@@ -532,6 +550,9 @@ static void nextTrack(uint16_t track) {
   if (myFolder->mode == 1 || myFolder->mode == 7) {
     Serial.println(F("Hörspielmodus ist aktiv -> keinen neuen Track spielen"));
     setstandbyTimer();
+    //    mp3.sleep(); // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
+  
+   
   }
   if (myFolder->mode == 2 || myFolder->mode == 8) {
     if (currentTrack != numTracksInFolder) {
@@ -540,6 +561,7 @@ static void nextTrack(uint16_t track) {
       Serial.print(F("Albummodus ist aktiv -> nächster Track: "));
       Serial.print(currentTrack);
     } else
+      //      mp3.sleep();   // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
       setstandbyTimer();
     { }
   }
@@ -560,6 +582,7 @@ static void nextTrack(uint16_t track) {
 
   if (myFolder->mode == 4) {
     Serial.println(F("Einzel Modus aktiv -> Strom sparen"));
+    //    mp3.sleep();      // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
     setstandbyTimer();
   }
   if (myFolder->mode == 5) {
@@ -572,8 +595,10 @@ static void nextTrack(uint16_t track) {
       // Fortschritt im EEPROM abspeichern
       EEPROM_update(myFolder->folder, currentTrack);
     } else {
+      //      mp3.sleep();  // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
       // Fortschritt zurück setzen
       EEPROM_update(myFolder->folder, 1);
+      forgetLastCard=true;
       setstandbyTimer();
     }
   }
@@ -938,14 +963,129 @@ void playShortCut(uint8_t shortCut) {
     Serial.println(F("Shortcut not configured!"));
 }
 
+//Um festzustellen ob eine Karte entfernt wurde, muss der MFRC regelmäßig ausgelesen werden
+byte pollCard()
+{
+  const byte maxRetries = 2;
+
+  if (!hasCard)
+  {
+    if (mfrc522.PICC_IsNewCardPresent())
+    {
+      if (mfrc522.PICC_ReadCardSerial())
+      {
+        Serial.print(F("ReadCardSerial finished"));
+        if (readCard(&myCard))
+        {
+      bool bSameUID = !memcmp(lastCardUid, mfrc522.uid.uidByte, 4);
+      if (bSameUID) {
+        Serial.print(F("Gleiche Karte"));
+      }
+      else {
+        Serial.print(F("Neue Karte"));
+      }
+      // store info about current card
+      memcpy(lastCardUid, mfrc522.uid.uidByte, 4);
+      lastCardWasUL = mfrc522.PICC_GetType(mfrc522.uid.sak) == MFRC522::PICC_TYPE_MIFARE_UL;
+    
+      retries = maxRetries;
+      hasCard = true;
+      return bSameUID ? PCS_CARD_IS_BACK : PCS_NEW_CARD;
+          }
+          else //readCard war nicht erfolgreich
+          {
+            mfrc522.PICC_HaltA();
+            mfrc522.PCD_StopCrypto1();
+            Serial.print(F("Karte konnte nicht gelesen werden"));
+    }
+    }
+    }
+    return PCS_NO_CHANGE;
+  }
+  else // hasCard
+  {
+    // perform a dummy read command just to see whether the card is in range
+    byte buffer[18];
+    byte size = sizeof(buffer);
+    
+    if (mfrc522.MIFARE_Read(lastCardWasUL ? 8 : blockAddr, buffer, &size) != MFRC522::STATUS_OK)
+    {
+      if (retries > 0)
+      {
+          retries--;
+      }
+      else
+      {
+          Serial.println(F("Karte ist weg!"));
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
+          hasCard = false;
+          return PCS_CARD_GONE;
+      }
+    }
+    else
+    {
+        retries = maxRetries;
+    }
+  }
+  return PCS_NO_CHANGE;
+
+}
+
+void handleCardReader()
+{
+  // poll card only every 100ms
+  static uint8_t lastCardPoll = 0;
+  uint8_t now = millis();
+  
+  if (static_cast<uint8_t>(now - lastCardPoll) > 100)
+  {
+    lastCardPoll = now;
+    switch (pollCard())
+    {
+    case PCS_NEW_CARD:
+      onNewCard();
+      break;
+    case PCS_CARD_GONE:
+    if (mySettings.stopWhenCardAway) {
+      mp3.pause();
+      setstandbyTimer();
+    }
+      break;
+      
+    case PCS_CARD_IS_BACK:
+    if (mySettings.stopWhenCardAway) 
+    {
+      //nur weiterspielen wenn vorher nicht konfiguriert wurde
+      if (!forgetLastCard) 
+      {
+          mp3.start();
+          disablestandbyTimer();
+      }
+      else 
+      {
+          onNewCard();
+      }
+    }
+
+      break;
+    }    
+  }
+
+}
+
 void loop() {
-  do {
+
     checkStandbyAtMillis();
     mp3.loop();
 
     // Modifier : WIP!
     if (activeModifier != NULL) {
+      if (!isPlaying()) {
+        mp3.start();
+      }
       activeModifier->loop();
+
     }
 
     // Buttons werden nun über JS_Button gehandelt, dadurch kann jede Taste
@@ -960,7 +1100,7 @@ void loop() {
       } while (pauseButton.isPressed() || upButton.isPressed() || downButton.isPressed());
       readButtons();
       adminMenu();
-      break;
+      return;
     }
 
     if (pauseButton.wasReleased()) {
@@ -1083,14 +1223,15 @@ void loop() {
     }
 #endif
     // Ende der Buttons
-  } while (!mfrc522.PICC_IsNewCardPresent());
+  //} while (!mfrc522.PICC_IsNewCardPresent());
+  handleCardReader();
+}
 
-  // RFID Karte wurde aufgelegt
-
-  if (!mfrc522.PICC_ReadCardSerial())
-    return;
-
-  if (readCard(&myCard) == true) {
+void onNewCard()
+{
+   forgetLastCard=false;
+  // make random a little bit more "random"
+  randomSeed(millis() + random(1000));
     if (myCard.cookie == cardCookie && myCard.nfcFolderSettings.folder != 0 && myCard.nfcFolderSettings.mode != 0) {
       playFolder();
     }
@@ -1102,12 +1243,11 @@ void loop() {
       waitForTrackToFinish();
       setupCard();
     }
-  }
-  mfrc522.PICC_HaltA();
-  mfrc522.PCD_StopCrypto1();
 }
 
 void adminMenu(bool fromCard = false) {
+  //Vergesse die vorherige Karte, wenn das Admin Menü betreten wird
+  forgetLastCard=true;
   disablestandbyTimer();
   mp3.pause();
   Serial.println(F("=== adminMenu()"));
@@ -1159,7 +1299,7 @@ void adminMenu(bool fromCard = false) {
       }
     }
   }
-  int subMenu = voiceMenu(12, 900, 900, false, false, 0, true);
+  int subMenu = voiceMenu(13, 900, 900, false, false, 0, true);
   if (subMenu == 0)
     return;
   if (subMenu == 1) {
@@ -1317,6 +1457,18 @@ void adminMenu(bool fromCard = false) {
       mySettings.adminMenuLocked = 3;
     }
 
+  }
+  //Wiedergabe stoppen wenn Karte entfernt wird
+  else if (subMenu == 13) {
+    int temp = voiceMenu(2, 937, 937, false);
+    if (temp == 2) {
+      mySettings.stopWhenCardAway = true;
+      Serial.println(F("StopWhenCardAway --> yes"));
+    }
+    else {
+      mySettings.stopWhenCardAway = false;
+      Serial.println(F("StopWhenCardAway --> no"));
+    }
   }
   writeSettingsToFlash();
   setstandbyTimer();
@@ -1503,6 +1655,7 @@ void setupCard() {
     do {
     } while (isPlaying());
     writeCard(newCard);
+    forgetLastCard=true;
   }
   delay(1000);
 }
@@ -1643,11 +1796,14 @@ bool readCard(nfcTagObject * nfcTag) {
             delay(100);
             mp3.pause();
           }
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
           delay(2000);
           return false;
         }
       }
       if (tempCard.nfcFolderSettings.mode != 0 && tempCard.nfcFolderSettings.mode != 255) {
+        Serial.println(F("modifier active"));
         if (isPlaying()) {
           mp3.playAdvertisement(260);
         }
@@ -1671,6 +1827,8 @@ bool readCard(nfcTagObject * nfcTag) {
         case 6: activeModifier = new RepeatSingleModifier(); break;
 
       }
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
       delay(2000);
       return false;
     }
