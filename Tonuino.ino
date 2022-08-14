@@ -11,7 +11,7 @@
   |_   _|___ ___|  |  |     |   | |     |
     | | | . |   |  |  |-   -| | | |  |  |
     |_| |___|_|_|_____|_____|_|___|_____| All-in-One
-    TonUINO Version 2.2
+    TonUINO Version 2.2 + mcgreg1 mod
 
     created by Thorsten Voß and licensed under GNU/GPL.
     Information and contribution at https://tonuino.de.
@@ -814,6 +814,12 @@ void setup() {
 
 void readButtons() {
   pauseButton.read();
+  /*Serial.print(F("pausButton "));
+  if (digitalRead(buttonPause) == LOW){
+    Serial.println(F("LOW"));
+  } else {
+    Serial.println(F("HIGH"));
+  }*/
   upButton.read();
   downButton.read();
 #ifdef FIVEBUTTONS
@@ -1093,11 +1099,11 @@ void loop() {
     readButtons();
 
     // admin menu
-    if ((pauseButton.pressedFor(LONG_PRESS) || upButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS)) && pauseButton.isPressed() && upButton.isPressed() && downButton.isPressed()) {
+    if ((/*pauseButton.pressedFor(LONG_PRESS)*/hasCard || upButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS)) && /*pauseButton.isPressed()*/hasCard && upButton.isPressed() && downButton.isPressed()) {
       mp3.pause();
       do {
         readButtons();
-      } while (pauseButton.isPressed() || upButton.isPressed() || downButton.isPressed());
+      } while (/*pauseButton.isPressed()*/hasCard || upButton.isPressed() || downButton.isPressed());
       readButtons();
       adminMenu();
       return;
@@ -1251,6 +1257,7 @@ void adminMenu(bool fromCard = false) {
   disablestandbyTimer();
   mp3.pause();
   Serial.println(F("=== adminMenu()"));
+  delay(2000);
   knownCard = false;
   if (fromCard == false) {
     // Admin menu has been locked - it still can be trigged via admin card
@@ -1346,7 +1353,7 @@ void adminMenu(bool fromCard = false) {
       mp3.playMp3FolderTrack(800);
       do {
         readButtons();
-        if (upButton.wasReleased() || downButton.wasReleased()) {
+        if (upButton.wasReleased() || downButton.wasReleased() ) {
           Serial.println(F("Abgebrochen!"));
           mp3.playMp3FolderTrack(802);
           return;
@@ -1379,6 +1386,7 @@ void adminMenu(bool fromCard = false) {
     }
   }
   else if (subMenu == 9) {
+    Serial.println(F("subMenu == 9"));
     // Create Cards for Folder
     // Ordner abfragen
     nfcTagObject tempCard;
@@ -1506,14 +1514,16 @@ uint8_t voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
     }
     readButtons();
     mp3.loop();
-    if (pauseButton.pressedFor(LONG_PRESS)) {
+    if (upButton.pressedFor(LONG_PRESS) && downButton.pressedFor(LONG_PRESS)) {
+      Serial.println(F("abort "));
       mp3.playMp3FolderTrack(802);
       ignorePauseButton = true;
       checkStandbyAtMillis();
       return defaultValue;
     }
-    if (pauseButton.wasReleased()) {
+    if (upButton.wasReleased() && downButton.wasReleased()) {
       if (returnValue != 0) {
+        Serial.print(F("released "));
         Serial.print(F("=== "));
         Serial.print(returnValue);
         Serial.println(F(" ==="));
@@ -1613,6 +1623,7 @@ void resetCard() {
 }
 
 bool setupFolder(folderSettings * theFolder) {
+  Serial.println(F("SetupFolder"));
   // Ordner abfragen
   theFolder->folder = voiceMenu(99, 301, 0, true, 0, 0, true);
   if (theFolder->folder == 0) return false;
@@ -1641,6 +1652,10 @@ bool setupFolder(folderSettings * theFolder) {
     theFolder->special2 = voiceMenu(mp3.getFolderTrackCount(theFolder->folder), 322, 0,
                                     true, theFolder->folder, theFolder->special);
   }
+  Serial.println(F("mode "));
+  Serial.println(theFolder->mode);
+  Serial.println(F("folder "));
+  Serial.println(theFolder->folder);
   return true;
 }
 
@@ -1651,6 +1666,7 @@ void setupCard() {
   if (setupFolder(&newCard.nfcFolderSettings) == true)
   {
     // Karte ist konfiguriert -> speichern
+    Serial.println(F("Karte konfiguriert, speichern"));
     mp3.pause();
     do {
     } while (isPlaying());
@@ -1848,6 +1864,7 @@ bool readCard(nfcTagObject * nfcTag) {
 
 
 void writeCard(nfcTagObject nfcTag) {
+  Serial.println(F("writeCard"));
   MFRC522::PICC_Type mifareType;
   byte buffer[16] = {0x13, 0x37, 0xb3, 0x47, // 0x1337 0xb347 magic cookie to
                      // identify our nfc tags
