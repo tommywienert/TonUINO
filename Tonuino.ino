@@ -71,7 +71,8 @@ static bool hasCard = false;
 static byte lastCardUid[4];
 static byte retries;
 static bool lastCardWasUL;
-static bool forgetLastCard=false;
+static bool forgetLastCard = false;
+static bool menuAdmin = false;
 
 const byte PCS_NO_CHANGE     = 0; // no change detected since last pollCard() call
 const byte PCS_NEW_CARD      = 1; // card with new UID detected (had no card or other card before)
@@ -814,12 +815,6 @@ void setup() {
 
 void readButtons() {
   pauseButton.read();
-  /*Serial.print(F("pausButton "));
-  if (digitalRead(buttonPause) == LOW){
-    Serial.println(F("LOW"));
-  } else {
-    Serial.println(F("HIGH"));
-  }*/
   upButton.read();
   downButton.read();
 #ifdef FIVEBUTTONS
@@ -873,6 +868,9 @@ void previousButton() {
 }
 
 void playFolder() {
+  if (menuAdmin) {
+    return;
+  }
   Serial.println(F("== playFolder()")) ;
   disablestandbyTimer();
   knownCard = true;
@@ -1099,11 +1097,11 @@ void loop() {
     readButtons();
 
     // admin menu
-    if ((/*pauseButton.pressedFor(LONG_PRESS)*/hasCard || upButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS)) && /*pauseButton.isPressed()*/hasCard && upButton.isPressed() && downButton.isPressed()) {
+    if ((pauseButton.pressedFor(LONG_PRESS)/*hasCard*/ || upButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS)) && pauseButton.isPressed()/*hasCard*/ && upButton.isPressed() && downButton.isPressed()) {
       mp3.pause();
       do {
         readButtons();
-      } while (/*pauseButton.isPressed()*/hasCard || upButton.isPressed() || downButton.isPressed());
+      } while (pauseButton.isPressed()/*hasCard*/ || upButton.isPressed() || downButton.isPressed());
       readButtons();
       adminMenu();
       return;
@@ -1254,6 +1252,7 @@ void onNewCard()
 void adminMenu(bool fromCard = false) {
   //Vergesse die vorherige Karte, wenn das Admin Menü betreten wird
   forgetLastCard=true;
+  menuAdmin = true;
   disablestandbyTimer();
   mp3.pause();
   Serial.println(F("=== adminMenu()"));
@@ -1514,8 +1513,24 @@ uint8_t voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
     }
     readButtons();
     mp3.loop();
+    if (pauseButton.pressedFor(LONG_PRESS)) {
+      mp3.playMp3FolderTrack(802);
+      ignorePauseButton = true;
+      checkStandbyAtMillis();
+      return defaultValue;
+    }
+    if (pauseButton.wasReleased()) {
+      if (returnValue != 0) {
+        Serial.print(F("=== "));
+        Serial.print(returnValue);
+        Serial.println(F(" ==="));
+        return returnValue;
+      }
+      delay(1000);
+    }
     if (upButton.pressedFor(LONG_PRESS) && downButton.pressedFor(LONG_PRESS)) {
       Serial.println(F("abort "));
+      menuAdmin = false;
       mp3.playMp3FolderTrack(802);
       ignorePauseButton = true;
       checkStandbyAtMillis();
@@ -1523,6 +1538,7 @@ uint8_t voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
     }
     if (upButton.wasReleased() && downButton.wasReleased()) {
       if (returnValue != 0) {
+        menuAdmin = false;
         Serial.print(F("released "));
         Serial.print(F("=== "));
         Serial.print(returnValue);
